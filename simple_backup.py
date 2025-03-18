@@ -63,19 +63,55 @@ def download_dataset(dataset_name, hf_token, temp_dir):
     """从HuggingFace下载数据集"""
     logger.info(f"开始下载数据集: {dataset_name}")
     try:
-        # 下载数据集快照
-        snapshot_path = snapshot_download(
+        # 创建HF API实例
+        api = HfApi(token=hf_token)
+        
+        # 获取数据集文件列表
+        files = api.list_repo_files(
             repo_id=dataset_name,
-            repo_type="dataset",
-            token=hf_token,
-            local_dir=temp_dir,
-            local_dir_use_symlinks=False
+            repo_type="dataset"
         )
-        logger.info(f"数据集下载完成: {snapshot_path}")
-        return snapshot_path, True
+        
+        # 过滤出备份文件（通常是zip文件）
+        backup_files = [f for f in files if f.endswith('.zip') or f.endswith('.tar.gz') or f.endswith('.7z')]
+        
+        if not backup_files:
+            logger.warning(f"数据集中没有找到备份文件，将下载整个数据集")
+            # 下载整个数据集
+            snapshot_path = snapshot_download(
+                repo_id=dataset_name,
+                repo_type="dataset",
+                token=hf_token,
+                local_dir=temp_dir,
+                local_dir_use_symlinks=False
+            )
+            logger.info(f"数据集下载完成: {snapshot_path}")
+            return snapshot_path
+        else:
+            # 按文件名排序（假设包含时间戳，新文件会排在后面）
+            backup_files.sort()
+            latest_backup = backup_files[-1]
+            logger.info(f"发现{len(backup_files)}个备份文件，将下载最新的: {latest_backup}")
+            
+            # 创建下载目标路径
+            download_path = os.path.join(temp_dir, latest_backup)
+            os.makedirs(os.path.dirname(os.path.join(temp_dir, latest_backup)), exist_ok=True)
+            
+            # 下载最新的备份文件
+            api.hf_hub_download(
+                repo_id=dataset_name,
+                repo_type="dataset",
+                filename=latest_backup,
+                token=hf_token,
+                local_dir=temp_dir
+            )
+            
+            logger.info(f"最新备份文件下载完成: {download_path}")
+            return temp_dir
+            
     except Exception as e:
-        logger.error(f"下载数据集 {dataset_name} 时出错: {str(e)}")
-        return None, False
+        logger.error(f"下载数据集时出错: {str(e)}")
+        raise
 
 def create_archive(source_dir, project_name):
     """创建项目的压缩文件"""
@@ -100,9 +136,8 @@ def upload_to_webdav(webdav_client, local_file, remote_path):
         filename = os.path.basename(local_file)
         remote_file_path = remote_path + filename
         
-        # 确保远程目录存在
-        if not webdav_client.check(remote_path):
-            webdav_client.mkdir(remote_path)
+        # 递归创建远程目录
+        create_remote_dirs(webdav_client, remote_path)
             
         # 上传文件
         webdav_client.upload_sync(
@@ -114,6 +149,30 @@ def upload_to_webdav(webdav_client, local_file, remote_path):
     except Exception as e:
         logger.error(f"上传文件时出错: {str(e)}")
         raise
+
+def create_remote_dirs(webdav_client, path):
+    """递归创建远程目录"""
+    if path == "/" or path == "":
+        return
+        
+    # 去掉末尾的斜杠以便处理
+    if path.endswith('/'):
+        path = path[:-1]
+        
+    parent_path = os.path.dirname(path)
+    
+    # 确保父目录存在
+    if parent_path and parent_path != "/":
+        create_remote_dirs(webdav_client, parent_path + "/")
+    
+    # 创建当前目录
+    if not webdav_client.check(path + "/"):
+        try:
+            logger.info(f"创建远程目录: {path}/")
+            webdav_client.mkdir(path + "/")
+        except Exception as e:
+            # 如果目录已存在，忽略错误
+            logger.debug(f"创建目录时发生错误(可能已存在): {str(e)}")
 
 def cleanup_old_backups(webdav_client, remote_path, project_name, max_backups):
     """清理旧的备份文件，只保留指定数量的最新备份"""
@@ -149,31 +208,33 @@ def cleanup_old_backups(webdav_client, remote_path, project_name, max_backups):
         raise
 
 def backup_mysql_database(db_config, temp_dir):
-    """备份MySQL数据库"""
-    db_name = db_config.get('db_name')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file_name = f"{db_name}_{timestamp}.sql"
-    backup_file_path = os.path.join(temp_dir, backup_file_name)
+    """备份MySQL/MariaDB数据库"""
+    db_name = db_config['db_name']
+    db_user = db_config['db_user']
+    db_password = db_config['db_password']
+    db_host = db_config['db_host']
+    db_port = db_config.get('db_port', '3306')
     
     logger.info(f"开始备份MySQL数据库: {db_name}")
+    
+    # 生成备份文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(temp_dir, f"{db_name}_{timestamp}.sql")
     
     try:
         cmd = [
             'mysqldump',
-            f"--user={db_config.get('db_user')}",
-            f"--password={db_config.get('db_password')}",
-            f"--host={db_config.get('db_host')}",
+            f'--user={db_user}',
+            f'--password={db_password}',
+            f'--host={db_host}',
+            f'--port={db_port}',
+            '--single-transaction',
+            '--quick',
+            '--lock-tables=false',
+            db_name
         ]
         
-        if 'db_port' in db_config:
-            cmd.append(f"--port={db_config.get('db_port')}")
-            
-        cmd.append('--single-transaction')
-        cmd.append('--quick')
-        cmd.append('--lock-tables=false')
-        cmd.append(db_name)
-        
-        with open(backup_file_path, 'wb') as f:
+        with open(backup_file, 'wb') as f:
             process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.PIPE)
             _, stderr = process.communicate()
             
@@ -181,8 +242,8 @@ def backup_mysql_database(db_config, temp_dir):
                 logger.error(f"备份MySQL数据库失败: {stderr.decode('utf-8')}")
                 return None
                 
-        logger.info(f"MySQL数据库备份成功: {backup_file_path}")
-        return backup_file_path
+        logger.info(f"MySQL数据库备份成功: {backup_file}")
+        return backup_file
             
     except Exception as e:
         logger.error(f"备份MySQL数据库出错: {str(e)}")
@@ -190,33 +251,33 @@ def backup_mysql_database(db_config, temp_dir):
 
 def backup_postgresql_database(db_config, temp_dir):
     """备份PostgreSQL数据库"""
-    db_name = db_config.get('db_name')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file_name = f"{db_name}_{timestamp}.dump"
-    backup_file_path = os.path.join(temp_dir, backup_file_name)
+    db_name = db_config['db_name']
+    db_user = db_config['db_user']
+    db_password = db_config['db_password']
+    db_host = db_config['db_host']
+    db_port = db_config.get('db_port', '5432')
     
     logger.info(f"开始备份PostgreSQL数据库: {db_name}")
     
+    # 生成备份文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(temp_dir, f"{db_name}_{timestamp}.dump")
+    
     try:
         env = os.environ.copy()
-        if 'db_password' in db_config:
-            env['PGPASSWORD'] = db_config.get('db_password')
+        if db_password:
+            env['PGPASSWORD'] = db_password
             
-        cmd = ['pg_dump']
+        cmd = [
+            'pg_dump',
+            f'--username={db_user}',
+            f'--host={db_host}',
+            f'--port={db_port}',
+            '--format=custom',
+            db_name
+        ]
         
-        if 'db_user' in db_config:
-            cmd.append(f"--username={db_config.get('db_user')}")
-            
-        if 'db_host' in db_config:
-            cmd.append(f"--host={db_config.get('db_host')}")
-            
-        if 'db_port' in db_config:
-            cmd.append(f"--port={db_config.get('db_port')}")
-            
-        cmd.append('--format=custom')
-        cmd.append(db_name)
-        
-        with open(backup_file_path, 'wb') as f:
+        with open(backup_file, 'wb') as f:
             process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.PIPE, env=env)
             _, stderr = process.communicate()
             
@@ -224,8 +285,8 @@ def backup_postgresql_database(db_config, temp_dir):
                 logger.error(f"备份PostgreSQL数据库失败: {stderr.decode('utf-8')}")
                 return None
                 
-        logger.info(f"PostgreSQL数据库备份成功: {backup_file_path}")
-        return backup_file_path
+        logger.info(f"PostgreSQL数据库备份成功: {backup_file}")
+        return backup_file
             
     except Exception as e:
         logger.error(f"备份PostgreSQL数据库出错: {str(e)}")
@@ -233,28 +294,33 @@ def backup_postgresql_database(db_config, temp_dir):
 
 def backup_mongodb_database(db_config, temp_dir):
     """备份MongoDB数据库"""
-    db_name = db_config.get('db_name')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file_name = f"{db_name}_{timestamp}.zip"
-    backup_file_path = os.path.join(temp_dir, backup_file_name)
+    db_name = db_config['db_name']
+    db_user = db_config.get('db_user')
+    db_password = db_config.get('db_password')
+    db_host = db_config.get('db_host', 'localhost')
+    db_port = db_config.get('db_port', '27017')
     
     logger.info(f"开始备份MongoDB数据库: {db_name}")
+    
+    # 生成备份文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(temp_dir, f"{db_name}_{timestamp}.zip")
     
     try:
         dump_dir = tempfile.mkdtemp()
         
         cmd = ['mongodump', f'--db={db_name}', f'--out={dump_dir}']
         
-        if 'db_user' in db_config and 'db_password' in db_config:
-            cmd.append(f"--username={db_config.get('db_user')}")
-            cmd.append(f"--password={db_config.get('db_password')}")
+        if db_user and db_password:
+            cmd.append(f'--username={db_user}')
+            cmd.append(f'--password={db_password}')
             cmd.append('--authenticationDatabase=admin')
             
-        if 'db_host' in db_config:
-            cmd.append(f"--host={db_config.get('db_host')}")
+        if db_host:
+            cmd.append(f'--host={db_host}')
             
-        if 'db_port' in db_config:
-            cmd.append(f"--port={db_config.get('db_port')}")
+        if db_port:
+            cmd.append(f'--port={db_port}')
             
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         _, stderr = process.communicate()
@@ -266,7 +332,7 @@ def backup_mongodb_database(db_config, temp_dir):
             
         # 创建压缩文件
         shutil.make_archive(
-            backup_file_path.replace('.zip', ''),
+            backup_file.replace('.zip', ''),
             'zip',
             dump_dir
         )
@@ -274,8 +340,8 @@ def backup_mongodb_database(db_config, temp_dir):
         # 清理临时目录
         shutil.rmtree(dump_dir, ignore_errors=True)
         
-        logger.info(f"MongoDB数据库备份成功: {backup_file_path}")
-        return backup_file_path
+        logger.info(f"MongoDB数据库备份成功: {backup_file}")
+        return backup_file
             
     except Exception as e:
         logger.error(f"备份MongoDB数据库出错: {str(e)}")
@@ -283,13 +349,14 @@ def backup_mongodb_database(db_config, temp_dir):
 
 def backup_sqlite_database(db_config, temp_dir):
     """备份SQLite数据库"""
-    db_name = db_config.get('db_name')
-    db_file = db_config.get('db_file')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file_name = f"{db_name}_{timestamp}.db"
-    backup_file_path = os.path.join(temp_dir, backup_file_name)
+    db_name = db_config['db_name']
+    db_file = db_config['db_file']
     
     logger.info(f"开始备份SQLite数据库: {db_file}")
+    
+    # 生成备份文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(temp_dir, f"{db_name}_{timestamp}.db")
     
     try:
         if not os.path.exists(db_file):
@@ -297,100 +364,110 @@ def backup_sqlite_database(db_config, temp_dir):
             return None
             
         # 直接复制数据库文件
-        shutil.copy2(db_file, backup_file_path)
+        shutil.copy2(db_file, backup_file)
         
-        logger.info(f"SQLite数据库备份成功: {backup_file_path}")
-        return backup_file_path
+        logger.info(f"SQLite数据库备份成功: {backup_file}")
+        return backup_file
             
     except Exception as e:
         logger.error(f"备份SQLite数据库出错: {str(e)}")
         return None
 
 def backup_project(project_config, webdav_config):
-    """备份单个项目及其关联的数据库"""
-    project_name = project_config.get('name')
-    account_name = project_name.split('/')[0]
-    hf_token = project_config.get('hf_token')
+    """备份单个项目"""
+    project_name = project_config['project_name']
+    hf_token = project_config['hf_token']
+    backup_path = project_config['backup_path']
+    max_backups = int(project_config.get('max_backups', 2))
     
     logger.info(f"开始备份项目: {project_name}")
     
-    # 创建WebDAV客户端
-    webdav_client = setup_webdav_client(
-        webdav_config.get('url'),
-        webdav_config.get('username'),
-        webdav_config.get('password')
-    )
+    # 设置WebDAV客户端
+    try:
+        webdav_client = setup_webdav_client(
+            webdav_config['url'],
+            webdav_config['username'],
+            webdav_config['password']
+        )
+    except Exception as e:
+        return project_name, False, f"设置WebDAV客户端出错: {str(e)}"
     
-    # 确定备份保存路径
-    backup_path = project_config.get('backup_path', f"/backup/{account_name}/")
+    # 确保备份路径以/结尾
     if not backup_path.endswith('/'):
         backup_path += '/'
     
-    # 设置最大备份数量
-    max_backups = int(project_config.get('max_backups', 2))
-    
-    # 创建临时目录用于下载和处理文件
     with tempfile.TemporaryDirectory() as temp_dir:
-        # 下载项目数据集
-        dataset_path, success = download_dataset(project_name, hf_token, temp_dir)
-        if not success:
-            return project_name, False, "下载数据集失败"
-        
-        # 创建数据集压缩文件
-        archive_path = create_archive(dataset_path, project_name)
-        
         try:
-            # 上传数据集压缩文件到WebDAV
+            # 下载项目数据集
+            dataset_path = download_dataset(project_name, hf_token, temp_dir)
+            
+            # 检查是否已经是压缩文件
+            files_in_temp = os.listdir(dataset_path)
+            archive_files = [f for f in files_in_temp if f.endswith('.zip') or f.endswith('.tar.gz') or f.endswith('.7z')]
+            
+            if archive_files:
+                # 已经是压缩文件，直接上传
+                logger.info(f"使用已下载的压缩文件: {archive_files[0]}")
+                archive_path = os.path.join(dataset_path, archive_files[0])
+            else:
+                # 创建数据集压缩文件
+                archive_path = create_archive(dataset_path, project_name)
+                
+            # 上传文件到WebDAV
             upload_to_webdav(webdav_client, archive_path, backup_path)
             
             # 清理旧的备份文件
-            cleanup_old_backups(webdav_client, backup_path, project_name, max_backups)
-            
-            # 删除临时压缩文件
-            if os.path.exists(archive_path):
-                os.remove(archive_path)
-                
-            # 检查是否需要备份数据库
-            if 'db_type' in project_config:
-                db_backup_path = None
-                db_type = project_config.get('db_type')
-                
-                # 根据数据库类型选择备份方法
-                if db_type == 'mysql':
-                    db_backup_path = backup_mysql_database(project_config, temp_dir)
-                elif db_type == 'postgresql':
-                    db_backup_path = backup_postgresql_database(project_config, temp_dir)
-                elif db_type == 'mongodb':
-                    db_backup_path = backup_mongodb_database(project_config, temp_dir)
-                elif db_type == 'sqlite':
-                    db_backup_path = backup_sqlite_database(project_config, temp_dir)
-                
-                # 如果数据库备份成功，上传到WebDAV
-                if db_backup_path:
-                    # 数据库备份保存路径可以与项目不同
-                    db_backup_webdav_path = project_config.get('db_backup_path', backup_path)
-                    if not db_backup_webdav_path.endswith('/'):
-                        db_backup_webdav_path += '/'
-                    
-                    # 上传数据库备份文件
-                    upload_to_webdav(webdav_client, db_backup_path, db_backup_webdav_path)
-                    
-                    # 清理旧的数据库备份文件
-                    db_name = project_config.get('db_name')
-                    cleanup_old_backups(webdav_client, db_backup_webdav_path, db_name, max_backups)
-                    
-                    # 删除临时数据库备份文件
-                    if os.path.exists(db_backup_path):
-                        os.remove(db_backup_path)
-                else:
-                    logger.warning(f"项目 {project_name} 的数据库备份失败")
-            
-            logger.info(f"项目 {project_name} 备份完成")
-            return project_name, True, None
+            cleanup_old_backups(webdav_client, backup_path, project_name.split('/')[-1], max_backups)
             
         except Exception as e:
             logger.error(f"备份项目 {project_name} 时发生错误: {str(e)}")
             return project_name, False, str(e)
+    
+    # 如果项目配置中有数据库配置，备份数据库
+    if 'db_type' in project_config:
+        try:
+            db_type = project_config['db_type']
+            logger.info(f"为项目 {project_name} 备份 {db_type} 数据库")
+            
+            # 设置数据库备份路径
+            if 'db_backup_path' in project_config:
+                db_backup_path = project_config['db_backup_path']
+                if not db_backup_path.endswith('/'):
+                    db_backup_path += '/'
+            else:
+                db_backup_path = backup_path + 'db/'
+                
+            # 根据数据库类型选择备份方法
+            with tempfile.TemporaryDirectory() as db_temp_dir:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                db_name = project_config['db_name']
+                
+                if db_type == 'mysql':
+                    backup_file = backup_mysql_database(project_config, db_temp_dir)
+                elif db_type == 'postgresql':
+                    backup_file = backup_postgresql_database(project_config, db_temp_dir)
+                elif db_type == 'mongodb':
+                    backup_file = backup_mongodb_database(project_config, db_temp_dir)
+                elif db_type == 'sqlite':
+                    backup_file = backup_sqlite_database(project_config, db_temp_dir)
+                else:
+                    return project_name, False, f"不支持的数据库类型: {db_type}"
+                
+                if not backup_file:
+                    return project_name, False, f"数据库备份失败"
+                
+                # 上传数据库备份文件
+                upload_to_webdav(webdav_client, backup_file, db_backup_path)
+                
+                # 清理旧的数据库备份文件
+                cleanup_old_backups(webdav_client, db_backup_path, db_name, max_backups)
+                
+        except Exception as e:
+            logger.error(f"备份项目 {project_name} 的数据库时发生错误: {str(e)}")
+            return project_name, False, str(e)
+    
+    logger.info(f"项目 {project_name} 备份完成")
+    return project_name, True, None
 
 def main():
     # 解析命令行参数
@@ -427,7 +504,7 @@ def main():
             
         # 获取项目配置
         project_config = dict(config.items(section))
-        project_config['name'] = project_name
+        project_config['project_name'] = project_name
         
         # 将项目添加到备份列表
         projects_to_backup.append(project_config)
