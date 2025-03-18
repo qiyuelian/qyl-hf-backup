@@ -5,17 +5,19 @@
 ## 主要特点
 
 - 支持备份多个HuggingFace账号下的多个项目
+- 支持指定HuggingFace存储库类型（dataset、model或space）
 - 自动备份与项目关联的数据库（MySQL、PostgreSQL、MongoDB、SQLite）
 - 支持自定义备份保存路径
 - 可设置最大备份保留数量
 - 支持并行备份多个项目
 - 完全兼容IPv6环境
 - 可设置为定时任务自动运行
+- 智能检测和处理文件名前缀不匹配问题
 
 ## 系统要求
 
 - Python 3.6+
-- Linux/Unix系统（对于定时任务功能）
+- Linux/Unix/Windows系统
 - 网络连接（IPv6环境完全兼容）
 - 根据数据库类型，需要安装相应的客户端工具
 
@@ -57,12 +59,16 @@ password = your_webdav_password
 # 项目配置示例 - 不带数据库的项目
 [project:account1/project1]
 hf_token = account1_token_here
+# 可选指定HuggingFace存储库类型: dataset, model或space
+hf_type = model
 backup_path = /backup/account1/project1/
 max_backups = 2
 
 # 项目配置示例 - 带MySQL数据库的项目
 [project:account1/project2]
 hf_token = account1_token_here
+# 可选指定HuggingFace存储库类型
+hf_type = space
 backup_path = /backup/account1/project2/
 # 数据库配置
 db_type = mysql
@@ -126,6 +132,7 @@ password = your_webdav_password
 ```ini
 [project:account1/project1]
 hf_token = account1_token_here          # HuggingFace API令牌
+hf_type = model                          # HuggingFace存储库类型：dataset, model或space
 backup_path = /backup/account1/project1/ # 备份保存路径
 max_backups = 2                          # 保留的备份数量
 ```
@@ -135,6 +142,7 @@ max_backups = 2                          # 保留的备份数量
 ```ini
 [project:account1/project2]
 hf_token = account1_token_here
+hf_type = space                          # HuggingFace存储库类型
 backup_path = /backup/account1/project2/
 db_type = mysql                          # 数据库类型
 db_name = project2_db                    # 数据库名称
@@ -159,12 +167,34 @@ db_backup_path = /backup/db/project2/    # 数据库备份保存路径（可选�
 
 ## 备份文件格式
 
-- 项目备份以ZIP格式保存，文件名格式为：`项目名_时间戳.zip`
+- 项目备份以TAR.GZ格式保存，文件名格式为：`项目名_backup_时间戳.tar.gz`
 - 数据库备份格式取决于数据库类型：
   - MySQL: SQL文件 (.sql)
   - PostgreSQL: 自定义转储格式 (.dump)
   - MongoDB: ZIP压缩文件 (.zip)
   - SQLite: 数据库文件 (.db)
+
+## 智能文件名处理
+
+脚本可以智能处理项目名与备份文件名前缀不匹配的情况：
+
+- 自动从下载的备份文件名中提取真实文件前缀
+- 特殊处理特定项目（如`sjg`/`sillytavern`）的命名差异
+- 在清理旧备份时使用检测到的真实前缀
+
+## 性能优化
+
+- 通过指定HuggingFace存储库类型`hf_type`，避免尝试多种类型，提高下载速度
+- 对下载失败的情况进行处理，如果WebDAV中已有备份，仍可继续数据库备份流程
+- 优化的过滤和匹配算法，更精确地识别备份文件
+
+## 注意事项
+
+- 确保您的WebDAV服务支持大文件上传
+- 对于很大的项目或数据库，备份过程可能需要较长时间
+- 如果您有很多项目，建议调整并行备份数量以避免资源占用过高
+- 在纯IPv6环境中使用时，确保您的WebDAV服务支持IPv6连接
+- 指定正确的`hf_type`可以显著提高下载成功率和速度
 
 ## 注意事项
 

@@ -1,0 +1,23 @@
+root@7627290575hax:~/hf_backup# python simple_backup.py 
+2025-03-18 18:39:14,932 - backup - INFO - 读取配置文件: backup_config.ini
+2025-03-18 18:39:14,932 - backup - INFO - WebDAV配置已加载
+2025-03-18 18:39:14,933 - backup - INFO - 找到 2 个项目需要备份
+2025-03-18 18:39:14,933 - backup - INFO - 开始备份项目: hxger/sjg
+2025-03-18 18:39:14,933 - backup - INFO - 开始下载数据集: hxger/sjg
+2025-03-18 18:39:15,333 - backup - ERROR - 下载数据集时出错: 404 Client Error. (Request ID: Root=1-67d94d5e-50f61be067017e7c287adb06;634e7a5d-49fe-44ab-bf28-9976b29994a8)
+
+Repository Not Found for url: https://huggingface.co/api/models/hxger/sjg/tree/main?recursive=True&expand=False.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated.
+2025-03-18 18:39:15,333 - backup - ERROR - 项目 hxger/sjg 下载失败
+2025-03-18 18:39:15,334 - backup - ERROR - 项目 hxger/sjg 备份失败
+2025-03-18 18:39:15,334 - backup - INFO - 开始备份项目: hxger/linkwarden
+2025-03-18 18:39:15,334 - backup - INFO - 开始下载数据集: hxger/linkwarden
+2025-03-18 18:39:15,422 - backup - ERROR - 下载数据集时出错: 404 Client Error. (Request ID: Root=1-67d94d5e-6764d0f261df66545de75f49;3ca495c6-591e-4a42-950a-6ea2e374e5f4)
+
+Repository Not Found for url: https://huggingface.co/api/models/hxger/linkwarden/tree/main?recursive=True&expand=False.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated.
+2025-03-18 18:39:15,422 - backup - ERROR - 项目 hxger/linkwarden 下载失败
+2025-03-18 18:39:15,422 - backup - ERROR - 项目 hxger/linkwarden 备份失败
+2025-03-18 18:39:15,422 - backup - INFO - 所有备份任务完成。成功: 0, 失败: 2
